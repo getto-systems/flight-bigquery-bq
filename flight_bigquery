@@ -1,0 +1,70 @@
+#!/bin/bash
+
+flight_bigquery_load(){
+  local opts=$1; shift
+  local src=$(echo "$opts" | jq ".src" -r)
+  local table_prop=$(echo "$opts" | jq ".table" -r)
+
+  local _ifs
+  local info
+  local namespace
+  local table
+  local name
+
+  local credential=./gcp_credential.json
+  local schema=./$src/.schema.json
+
+  echo "$GCP_CREDENTIALS_JSON" > $credential
+  echo "$SCHEMA_JSON" > $schema
+
+  gcloud auth activate-service-account --key-file=$credential > /dev/null
+  bq ls > /dev/null 2>&1
+
+  _ifs=$IFS
+  IFS=$'\n'
+  for info in $(echo "$FLIGHT_DATA" | jq ".[]" -c); do
+    IFS=$_ifs
+
+    namespace=$(echo "$info" | jq ".namespace" -r)
+    table=$(echo "$info" | jq ".$table_prop" -r)
+    name=$(echo "$info" | jq ".name" -r)
+
+    >&2 bq mk $namespace
+    >&2 bq load --source_format=NEWLINE_DELIMITED_JSON $namespace.$table $src/$name $schema
+  done
+
+  echo $FLIGHT_DATA
+}
+
+flight_bigquery_rm(){
+  local opts=$1; shift
+  local table_prop=$(echo "$opts" | jq ".table" -r)
+
+  local _ifs
+  local info
+  local namespace
+  local table
+
+  local credential=./gcp_credential.json
+
+  echo "$GCP_CREDENTIALS_JSON" > $credential
+
+  gcloud auth activate-service-account --key-file=$credential > /dev/null
+  bq ls > /dev/null 2>&1
+
+  _ifs=$IFS
+  IFS=$'\n'
+  for info in $(echo "$FLIGHT_DATA" | jq ".[]" -c); do
+    IFS=$_ifs
+
+    namespace=$(echo "$info" | jq ".namespace" -r)
+    table=$(echo "$info" | jq ".$table_prop" -r)
+
+    bq rm -f -t $namespace.$table > /dev/null
+  done
+
+  echo $FLIGHT_DATA
+}
+
+action=$1; shift
+flight_bigquery_$action "$@"
