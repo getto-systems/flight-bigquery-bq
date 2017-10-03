@@ -60,7 +60,7 @@ flight_bigquery_rm(){
     namespace=$(echo "$info" | jq ".namespace" -r)
     table=$(echo "$info" | jq ".$table_prop" -r)
 
-    bq rm -f -t $namespace.$table > /dev/null
+    >&2 bq rm -f -t $namespace.$table
   done
 
   echo $FLIGHT_DATA
