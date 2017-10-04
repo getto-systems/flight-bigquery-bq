@@ -31,6 +31,11 @@ flight_bigquery_load(){
 
     >&2 bq mk $namespace
     >&2 bq load --source_format=NEWLINE_DELIMITED_JSON $namespace.$table $src/$name $schema
+    if [ $? != 0 ]; then
+      echo "load error"
+      head $src/$name
+      exit 100
+    fi
   done
 
   echo $FLIGHT_DATA
@@ -64,6 +69,114 @@ flight_bigquery_rm(){
   done
 
   echo $FLIGHT_DATA
+}
+
+flight_bigquery_sumup(){
+  local opts=$1; shift
+  local dest=$(echo "$opts" | jq ".dest" -r)
+  local table_prop=$(echo "$opts" | jq ".table" -r)
+  local count=$(echo "$opts" | jq ".count" -r)
+
+  local fields=$(echo "$opts" | jq ".query.fields" | jq 'join(",")' -r)
+  local group=$(echo "$opts" | jq ".query.group" | jq 'join(",")' -r)
+
+  local scope=$(echo "$opts" | jq ".scope" -c)
+
+  local _ifs
+  local info
+  local namespace
+  local table
+  local query
+  local data
+
+  local credential=./gcp_credential.json
+  local query=$dest/_flight_query.sql
+
+  echo "$GCP_CREDENTIALS_JSON" > $credential
+  mkdir -p $dest
+
+  gcloud auth activate-service-account --key-file=$credential > /dev/null
+  bq ls > /dev/null 2>&1
+
+  _ifs=$IFS
+  IFS=$'\n'
+  for info in $(echo "$FLIGHT_DATA" | jq ".[]" -c); do
+    IFS=$_ifs
+
+    namespace=$(echo "$info" | jq ".namespace" -r)
+    table=$(echo "$info" | jq ".$table_prop" -r)
+    name=$(echo "$info" | jq ".name" -r)
+
+    if _flight_bigquery_scope "$scope" "$namespace" "$table"; then
+      echo "#standardSQL" >> $query
+      echo 'select' >> $query
+      if [ -n "$group" ]; then
+        echo "$group," >> $query
+      fi
+      echo "$fields" >> $query
+      echo 'from `'$namespace'`.`'$table'`' >> $query
+      if [ -n "$group" ]; then
+        echo 'group by '"$group" >> $query
+      fi
+
+      cat $query | bq --format json query -n "$count" | jq ".[]" -c > $dest/$name
+      if [ $? != 0 ]; then
+        echo "query error"
+        cat $query
+        exit 100
+      fi
+    else
+      echo "not allowed"
+      exit 105
+    fi
+  done
+
+  echo $FLIGHT_DATA
+}
+_flight_bigquery_scope(){
+  scope=$1; shift
+  namespace=$1; shift
+  table=$1; shift
+
+  key=$(_flight_bigquery_match "$scope" "$namespace")
+
+  if [ -n "$key" ]; then
+    if [ -n "$(_flight_bigquery_match "$(echo "$scope" | jq '."'$key'"' -c)" "$table")" ]; then
+      return 0
+    fi
+  fi
+  return 1
+}
+_flight_bigquery_match(){
+  local scope=$1; shift
+  local match=$1; shift
+
+  local _ifs
+  local key
+
+  if [ "$(echo "$scope" | jq 'has("'$match'")')" == true ]; then
+    echo $match
+    return
+  fi
+
+  _ifs=$IFS
+  IFS=$'\n'
+  for key in $(echo "$scope" | jq "keys[]" -r); do
+    IFS=$_ifs
+
+    case "$key" in
+      ~*)
+        case "$match" in
+          ${key#'~'}*)
+            if [ -n "$(echo "$match" | sed -n -e '/^[a-zA-Z0-9_]\+$/p')" ]; then
+              echo $key
+              return
+            fi
+            ;;
+        esac
+        ;;
+    esac
+  done
 }
 
 action=$1; shift
